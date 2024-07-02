@@ -1,20 +1,23 @@
 {
   lib,
-  nix-update-script,
-  buildNpmPackage,
   fetchFromGitHub,
   runCommand,
   jq,
+  buildNpmPackage,
+  python3,
+  stdenvNoCC,
+  testers,
+  basedpyright,
 }:
 
 let
-  version = "1.12.4";
+  version = "1.13.1";
 
   src = fetchFromGitHub {
     owner = "detachhead";
     repo = "basedpyright";
-    rev = "v${version}";
-    hash = "sha256-ZcFCK6KKX10w5KgsUQIDMMBIzU+8pw0t9/pn1tzCnMg=";
+    rev = "refs/tags/v${version}";
+    hash = "sha256-dIIYHVsDSNwhedWlPnLCvB5aGgVukGLs5K84WHqQyVM=";
   };
 
   patchedPackageJSON = runCommand "package.json" { } ''
@@ -44,7 +47,7 @@ let
     pname = "pyright-internal";
     inherit version src;
     sourceRoot = "${src.name}/packages/pyright-internal";
-    npmDepsHash = "sha256-90IGWvXvUpvIQdpukm8njwcNj7La6rWwoENh4kiBayI=";
+    npmDepsHash = "sha256-OZHCAJd/O6u1LhkJZ/TK9L8s4bcXMMNVlKF3If+Ms1A=";
     dontNpmBuild = true;
     # FIXME: Remove this flag when TypeScript 5.5 is released
     npmFlags = [ "--legacy-peer-deps" ];
@@ -54,16 +57,49 @@ let
       runHook postInstall
     '';
   };
+
+  docify = python3.pkgs.buildPythonApplication {
+    pname = "docify";
+    version = "unstable";
+    format = "pyproject";
+    src = fetchFromGitHub {
+      owner = "AThePeanut4";
+      repo = "docify";
+      rev = "7380a6faa6d1e8a3dc790a00254e6d77f84cbd91";
+      hash = "sha256-BPR1rc/JzdBweiWmdHxgardDDrJZVWkUIF3ZEmEYf/A=";
+    };
+    buildInputs = [ python3.pkgs.setuptools ];
+    propagatedBuildInputs = [
+      python3.pkgs.libcst
+      python3.pkgs.tqdm
+    ];
+  };
+
+  docstubs = stdenvNoCC.mkDerivation {
+    name = "docstubs";
+    inherit src;
+    buildInputs = [ docify ];
+
+    installPhase = ''
+      runHook preInstall
+      cp -r packages/pyright-internal/typeshed-fallback docstubs
+      ${docify}/bin/docify docstubs/stdlib --builtins-only --in-place
+      cp -rv docstubs "$out"
+      runHook postInstall
+    '';
+  };
 in
 buildNpmPackage rec {
   pname = "basedpyright";
   inherit version src;
 
   sourceRoot = "${src.name}/packages/pyright";
-  npmDepsHash = "sha256-HI3ehtJ29kFSv0XyrXcp5JGs9HGYb9ub2oOSQ6uEn8Q=";
+  npmDepsHash = "sha256-wjwF1OlR9ohrl8gWW7ctVpeCq2Fu2m1XdHOEkXt7zjA=";
 
   postPatch = ''
     chmod +w ../../
+    mkdir ../../docstubs
+    ln -s ${docstubs}/stubs ../../docstubs
     ln -s ${pyright-root}/node_modules ../../node_modules
     chmod +w ../pyright-internal
     ln -s ${pyright-internal}/node_modules ../pyright-internal/node_modules
@@ -76,7 +112,10 @@ buildNpmPackage rec {
 
   dontNpmBuild = true;
 
-  passthru.updateScript = nix-update-script { };
+  passthru = {
+    updateScript = ./update.sh;
+    tests.version = testers.testVersion { package = basedpyright; };
+  };
 
   meta = {
     changelog = "https://github.com/detachhead/basedpyright/releases/tag/${version}";
